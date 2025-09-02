@@ -18,6 +18,12 @@ OUT_MAX = 2.031
 OUT_MIN = 0.007
 OUT_ZERO = (OUT_MAX + OUT_MIN) / 2
 
+ZERO_IN1 = 0.0
+HALF_IN1 = 0.5
+
+ZERO_IN2 = 0.0
+HALF_IN2 = 0.5
+
 class red_pitaya_pyrpl_pid_worker(Worker):
     def init(self):
         import sys
@@ -127,11 +133,11 @@ class red_pitaya_pyrpl_pid_worker(Worker):
         """Set setpoint parameter directly"""
         try:
             if self.setpoint_source == 'digital_setpoint_in2':
-                self._set_param('in2', 'setpoint', value)
-                return float(self._get_pid('in2').setpoint)
+                self._set_param('in2', 'setpoint', self.phy2dig_setpoint_in2(value))
+                return self.dig2phy_setpoint_in2(float(self._get_pid('in2').setpoint))
             else:
-                self._set_param('in1', 'setpoint', value)
-                return float(self._get_pid('in1').setpoint)
+                self._set_param('in1', 'setpoint', self.phy2dig_setpoint_in1(value))
+                return self.dig2phy_setpoint_in1(float(self._get_pid('in1').setpoint))
         except Exception as e:
             print(f"[DEBUG] set_setpoint error: {e}")
             raise
@@ -272,8 +278,8 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             self.pids['in1'].output_direct = 'out1'
             self.pids['in1'].input = 'in1'
             self.pids['in2'].input = 'in2'
-            self.pids['in1'].setpoint = 0
-            self.pids['in2'].setpoint = 0
+            self.pids['in1'].setpoint = 0 #dummy
+            self.pids['in2'].setpoint = 0 #dummy
             self.pids['in1'].p = 0
             self.pids['in1'].i = 0
             self.pids['in1'].ival = 0
@@ -316,10 +322,14 @@ class red_pitaya_pyrpl_pid_worker(Worker):
         status = {}
         try:
             for pid_id, pid in self.pids.items():
+                if pid_id == 'in1':
+                    setpoint_phy = self.dig2phy_setpoint_in1(pid.setpoint)
+                else:
+                    setpoint_phy = self.dig2phy_setpoint_in2(pid.setpoint)
                 pid_status = {
                     'input': pid.input,
                     'output_direct': pid.output_direct,
-                    'setpoint': pid.setpoint,
+                    'setpoint': setpoint_phy,
                     'p': pid.p,
                     'i': pid.i,
                     'max_voltage': pid.max_voltage+OUT_ZERO,
@@ -514,7 +524,10 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             # Current parameter values - check which attributes exist
             status['p'] = float(pid.p)
             status['i'] = float(pid.i)
-            status['setpoint'] = float(pid.setpoint)
+            if self.setpoint_source == 'digital_setpoint_in2':
+                status['setpoint'] = self.dig2phy_setpoint_in2(pid.setpoint)
+            else:
+                status['setpoint'] = self.dig2phy_setpoint_in1(pid.setpoint)
             status['ival'] = float(pid.ival)
             
             # Control settings
@@ -595,4 +608,24 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             return True
         except Exception as e:
             print(f"[ERROR] Failed to set PID controllers output to zero: {e}")
-    
+
+    # because of the calibration issue, we need to manually calibrate the digital setpoints
+    def phy2dig_setpoint_in1(self, physical_value):
+        k1 = (HALF_IN1 - ZERO_IN1)/0.5
+        b1 = ZERO_IN1
+        return k1 * physical_value + b1
+
+    def dig2phy_setpoint_in1(self, digital_value):
+        k1 = (0.5 - 0.0) / (HALF_IN1 - ZERO_IN1)
+        b1 = 0.0 - k1 * ZERO_IN1
+        return k1 * digital_value + b1
+
+    def phy2dig_setpoint_in2(self, physical_value):
+        k2 = (HALF_IN2 - ZERO_IN2)/0.5
+        b2 = ZERO_IN2
+        return k2 * physical_value + b2
+
+    def dig2phy_setpoint_in2(self, digital_value):
+        k2 = (0.5 - 0.0) / (HALF_IN2 - ZERO_IN2)
+        b2 = 0.0 - k2 * ZERO_IN2
+        return k2 * digital_value + b2
