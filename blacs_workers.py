@@ -12,17 +12,18 @@ print("Loading Red Pitaya PID BLACS Worker...")
 
 import json
 from blacs.tab_base_classes import Worker
+import numpy as np
 
 # calibrate the output range
 OUT_MAX = 2.031
 OUT_MIN = 0.007
 OUT_ZERO = (OUT_MAX + OUT_MIN) / 2
 
-ZERO_IN1 = 0.0
-HALF_IN1 = 0.5
+ZERO_IN1 = -0.011962890625
+HALF_IN1 = 0.42919921875
 
-ZERO_IN2 = 0.0
-HALF_IN2 = 0.5
+ZERO_IN2 = -0.0052490234375
+HALF_IN2 = 0.43505859375
 
 class red_pitaya_pyrpl_pid_worker(Worker):
     def init(self):
@@ -42,8 +43,8 @@ class red_pitaya_pyrpl_pid_worker(Worker):
                 'in2': self.p.rp.pid0,
                 'in1': self.p.rp.pid1
             }
-            self.pids['in1'].ival =-0.99
-            #self.pids['in2'].ival =-0.99
+            self.pids['in1'].ival = -0.99
+            self.pids['in2'].ival = -0.99
             self.pids['in1'].pause_gains = 'pi'
             self.pids['in2'].pause_gains = 'pi'
             self.pids['in1'].paused = True
@@ -70,6 +71,19 @@ class red_pitaya_pyrpl_pid_worker(Worker):
                 self.pids['in2'].p = blacs_cfg['in2_p']
                 self.pids['in1'].i = blacs_cfg['in1_i']
                 self.pids['in2'].i = blacs_cfg['in2_i']
+                self.pids['in1'].use_setpoint_sequence = blacs_cfg['in1_use_setpoint_sequence']
+                self.pids['in2'].use_setpoint_sequence = blacs_cfg['in2_use_setpoint_sequence']
+                self.pids['in1'].setpoint_index = blacs_cfg['in1_setpoint_index']
+                self.pids['in2'].setpoint_index = blacs_cfg['in2_setpoint_index']
+                in1_digital_setpoint_array = blacs_cfg['in1_digital_setpoint_array']
+                in2_digital_setpoint_array = blacs_cfg['in2_digital_setpoint_array']
+                self.pids['in1'].set_setpoint_array(in1_digital_setpoint_array)
+                self.pids['in2'].set_setpoint_array(in2_digital_setpoint_array)
+                # Initialize current dictionary structure before accessing
+                self.current['in1'] = {}
+                self.current['in2'] = {}
+                self.current['in1']['digital_setpoint_array'] = [self.dig2phy_setpoint_in1(x) for x in in1_digital_setpoint_array]
+                self.current['in2']['digital_setpoint_array'] = [self.dig2phy_setpoint_in2(x) for x in in2_digital_setpoint_array]
                 if blacs_cfg['set_in2_enabled']:
                     self.setpoint_source = 'digital_setpoint_in2'
                     self.set_in2_enabled = True
@@ -87,6 +101,8 @@ class red_pitaya_pyrpl_pid_worker(Worker):
                 self.setpoint_source = 'digital_setpoint_in1'
                 self.pids['in1'].input = 'in1'
                 self.pids['in1'].output_direct = 'out1'
+                self.pids['in2'].input = 'in2'
+                self.pids['in2'].output_direct = 'out2'
                 self.set_in1_enabled = True
                 self.set_in2_enabled = False
                 self.set_analog_enabled = False
@@ -273,6 +289,8 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             self.set_in1_enabled = False
             self.set_in2_enabled = False
             self.set_analog_enabled = True
+            self.pids['in1'].use_setpoint_sequence = False
+            self.pids['in2'].use_setpoint_sequence = False
             self.setpoint_source = 'analog_setpoint'
             self.pids['in2'].output_direct = 'off'
             self.pids['in1'].output_direct = 'out1'
@@ -324,8 +342,10 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             for pid_id, pid in self.pids.items():
                 if pid_id == 'in1':
                     setpoint_phy = self.dig2phy_setpoint_in1(pid.setpoint)
+                    setpoint_in_sequence_phy = self.dig2phy_setpoint_in1(pid.setpoint_in_sequence)
                 else:
                     setpoint_phy = self.dig2phy_setpoint_in2(pid.setpoint)
+                    setpoint_in_sequence_phy = self.dig2phy_setpoint_in2(pid.setpoint_in_sequence)
                 pid_status = {
                     'input': pid.input,
                     'output_direct': pid.output_direct,
@@ -337,12 +357,19 @@ class red_pitaya_pyrpl_pid_worker(Worker):
                     'ival': pid.ival,
                     'pause_gains': pid.pause_gains,
                     'paused': pid.paused,
-                    'differential_mode_enabled': pid.differential_mode_enabled
+                    'differential_mode_enabled': pid.differential_mode_enabled,
+                    'use_setpoint_sequence': pid.use_setpoint_sequence,
+                    'setpoint_index': pid.setpoint_index,
+                    'setpoint_in_sequence': setpoint_in_sequence_phy,
+                    'sequence_wrap_flag': pid.sequence_wrap_flag,
+                    # Preserve existing digital_setpoint_array if it exists
+                    'digital_setpoint_array': self.current.get(pid_id, {}).get('digital_setpoint_array', [])
                 }
                 status[pid_id] = pid_status
             
             print(f"[WORKER] Current state for all PIDs read successfully: {status}")
-            self.current = status
+            # Update instead of replace to preserve initialization data
+            self.current.update(status)
         except Exception as e:
             print(f"[WORKER] Error reading current state: {e}")
 
@@ -390,13 +417,15 @@ class red_pitaya_pyrpl_pid_worker(Worker):
                 self._set_param('in2', 'p', 0.0)
                 self._set_param('in2', 'i', 0.0)
                 self._set_param('in2', 'ival', 0.0)
-                self._set_param('in2', 'setpoint', 0.0)
+                self._set_param('in2', 'setpoint', self.phy2dig_setpoint_in2(0.0))
+                self.set_setpoint_array(np.zeros(16))
                 return f"PID reset: p={self.pids['in2'].p}, i={self.pids['in2'].i}, ival={self.pids['in2'].ival}, setpoint={self.pids['in2'].setpoint}"
             else:
                 self._set_param('in1', 'i', 0.0)
                 self._set_param('in1', 'p', 0.0)
                 self._set_param('in1', 'ival', 0.0)
-                self._set_param('in1', 'setpoint', 0.0)
+                self._set_param('in1', 'setpoint', self.phy2dig_setpoint_in1(0.0))
+                self.set_setpoint_array(np.zeros(16))
                 return f"PID reset: p={self.pids['in1'].p}, i={self.pids['in1'].i}, ival={self.pids['in1'].ival}, setpoint={self.pids['in1'].setpoint}"
         except Exception as e:
             print(f"[WORKER] reset_pid error: {e}")
@@ -500,7 +529,13 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             'in1_pause_gains': str(self.pids['in1'].pause_gains),
             'in2_pause_gains': str(self.pids['in2'].pause_gains),
             'in1_setpoint': float(self.pids['in1'].setpoint),
-            'in2_setpoint': float(self.pids['in2'].setpoint)
+            'in2_setpoint': float(self.pids['in2'].setpoint),
+            'in1_use_setpoint_sequence': bool(self.pids['in1'].use_setpoint_sequence),
+            'in2_use_setpoint_sequence': bool(self.pids['in2'].use_setpoint_sequence),
+            'in1_setpoint_index': int(self.pids['in1'].setpoint_index),
+            'in2_setpoint_index': int(self.pids['in2'].setpoint_index),
+            'in1_digital_setpoint_array': self.current.get('in1', {}).get('digital_setpoint_array', []),
+            'in2_digital_setpoint_array': self.current.get('in2', {}).get('digital_setpoint_array', [])
         }
         print(config)
         with open(path, 'w', encoding='utf-8') as f:
@@ -514,12 +549,22 @@ class red_pitaya_pyrpl_pid_worker(Worker):
         current_time = time.strftime("%H:%M:%S")
         print(f"[WORKER] {current_time}: Checking hardware status...")
         
+        # Initialize status dictionary first
+        status = {}
+        
         if self.setpoint_source == 'digital_setpoint_in2':
             pid = self._get_pid('in2')
-        else:
+            status['digital_setpoint_array'] = self.current['in2']['digital_setpoint_array']
+            status['setpoint_in_sequence'] = self.dig2phy_setpoint_in2(float(pid.setpoint_in_sequence))
+            print(pid.setpoint_in_sequence)
+        elif self.setpoint_source == 'digital_setpoint_in1':
+            pid = self._get_pid('in1')
+            status['digital_setpoint_array'] = self.current['in1']['digital_setpoint_array']
+            status['setpoint_in_sequence'] = self.dig2phy_setpoint_in1(float(pid.setpoint_in_sequence))
+            print(pid.setpoint_in_sequence)
+        elif self.setpoint_source == 'analog_setpoint':
             pid = self._get_pid('in1')
         try:
-            status = {}
             status['setpoint_source'] = self.setpoint_source
             # Current parameter values - check which attributes exist
             status['p'] = float(pid.p)
@@ -546,9 +591,12 @@ class red_pitaya_pyrpl_pid_worker(Worker):
 
             status['setpoint_source'] = self.setpoint_source
 
+            status['use_setpoint_sequence'] = bool(pid.use_setpoint_sequence)
+            status['setpoint_index'] = int(pid.setpoint_index)
+            status['sequence_wrap_flag'] = bool(pid.sequence_wrap_flag)
+
             print(f"[WORKER] Hardware status check completed")
             print(status)
-            print(pid.ival)
             return status
             
         except Exception as e:
@@ -567,10 +615,16 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             now = time.time()
             if self.setpoint_source == 'digital_setpoint_in1':
                 val_in = self.p.rp.scope.voltage_in1
-                error = val_in - pid.setpoint
+                if pid.use_setpoint_sequence:
+                    error = val_in - pid.setpoint_in_sequence
+                else:
+                    error = val_in - pid.setpoint
             elif self.setpoint_source == 'digital_setpoint_in2':
                 val_in = self.p.rp.scope.voltage_in2
-                error = val_in - pid.setpoint
+                if pid.use_setpoint_sequence:
+                    error = val_in - pid.setpoint_in_sequence
+                else:
+                    error = val_in - pid.setpoint
             else:  # analog_setpoint
                 val_in = self.p.rp.scope.voltage_in1
                 val_sp = self.p.rp.scope.voltage_in2
@@ -603,7 +657,7 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             self.pids['in1'].p = 0.0
             self.pids['in2'].p = 0.0
             self.pids['in1'].ival = -0.99
-            #self.pids['in2'].ival = -0.99
+            self.pids['in2'].ival = -0.99
             print("[DEBUG] PID controllers output set to zero")
             return True
         except Exception as e:
@@ -629,3 +683,72 @@ class red_pitaya_pyrpl_pid_worker(Worker):
         k2 = (0.5 - 0.0) / (HALF_IN2 - ZERO_IN2)
         b2 = 0.0 - k2 * ZERO_IN2
         return k2 * digital_value + b2
+
+        # ---------- Digital Setpoint Sequence Methods ----------
+    def set_use_setpoint_sequence(self, enable):
+        """Enable/disable setpoint sequence mode"""
+        try:
+            if self.setpoint_source == 'digital_setpoint_in2':
+                self.pids['in2'].use_setpoint_sequence = bool(enable)
+                return self.pids['in2'].use_setpoint_sequence
+            elif self.setpoint_source == 'digital_setpoint_in1':
+                self.pids['in1'].use_setpoint_sequence = bool(enable)
+                return self.pids['in1'].use_setpoint_sequence
+        except Exception as e:
+            print(f"[WORKER] set_use_setpoint_sequence error: {e}")
+            raise
+
+    def set_setpoint_array(self, array):
+        """Set setpoint array for sequence mode"""
+        try:
+            if self.setpoint_source == 'digital_setpoint_in2':
+                digital_array = [self.phy2dig_setpoint_in2(val) for val in array]
+                self.current['in2']['digital_setpoint_array'] = array
+                self.pids['in2'].set_setpoint_array(digital_array)
+            elif self.setpoint_source == 'digital_setpoint_in1':
+                digital_array = [self.phy2dig_setpoint_in1(val) for val in array]
+                self.current['in1']['digital_setpoint_array'] = array
+                self.pids['in1'].set_setpoint_array(digital_array)
+            return f"Setpoint array set: {array} -> {digital_array}"
+        except Exception as e:
+            print(f"[WORKER] set_setpoint_array error: {e}")
+            raise
+
+    def reset_sequence_index(self):
+        """Reset sequence index to 0"""
+        try:
+            if self.setpoint_source == 'digital_setpoint_in2':
+                self.pids['in2'].reset_sequence_index()
+            elif self.setpoint_source == 'digital_setpoint_in1':
+                self.pids['in1'].reset_sequence_index()
+            return "Sequence index reset to 0"
+        except Exception as e:
+            print(f"[WORKER] reset_sequence_index error: {e}")
+            raise
+
+    def manually_change_setpoint(self):
+        """Manually trigger setpoint change in sequence"""
+        try:
+            if self.setpoint_source == 'digital_setpoint_in2':
+                self.pids['in2'].manually_change_setpoint()
+            elif self.setpoint_source == 'digital_setpoint_in1':
+                self.pids['in1'].manually_change_setpoint()
+            return "Setpoint manually changed"
+        except Exception as e:
+            print(f"[WORKER] manually_change_setpoint error: {e}")
+            raise
+
+
+
+    def set_setpoint_index(self, index):
+        """Set setpoint index (0-15)"""
+        try:
+            if self.setpoint_source == 'digital_setpoint_in2':
+                self.pids['in2'].setpoint_index = int(index) & 0xF
+                return self.pids['in2'].setpoint_index
+            elif self.setpoint_source == 'digital_setpoint_in1':
+                self.pids['in1'].setpoint_index = int(index) & 0xF
+                return self.pids['in1'].setpoint_index
+        except Exception as e:
+            print(f"[WORKER] set_setpoint_index error: {e}")
+            raise

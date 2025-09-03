@@ -95,6 +95,59 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
         setpoint_source_layout.addWidget(self.setpoint_source_combo)
         status_layout.addWidget(setpoint_source_group, 2, 0, 1, 1)
 
+        # Setpoint Sequence Group
+        sequence_group = QGroupBox('Setpoint Sequence')
+        sequence_layout = QGridLayout(sequence_group)
+        
+        # Use sequence checkbox
+        sequence_layout.addWidget(QLabel('Use Sequence:'), 0, 0)
+        self.use_sequence_checkbox = QCheckBox()
+        sequence_layout.addWidget(self.use_sequence_checkbox, 0, 1)
+        
+        # Setpoint array input
+        self.array_label = QLabel('Array (Python expr):')
+        sequence_layout.addWidget(self.array_label, 1, 0)
+        self.setpoint_array_edit = QLineEdit('np.zeros(16)')
+        self.setpoint_array_edit.setToolTip('Enter Python expression like: np.zeros(16), np.linspace(-0.5,0.5,16), [0.1]*16, etc.')
+        sequence_layout.addWidget(self.setpoint_array_edit, 1, 1, 1, 2)
+        
+        # Current sequence info
+        self.index_label = QLabel('Index (0-15):')
+        sequence_layout.addWidget(self.index_label, 2, 0)
+        self.setpoint_index_edit = QLineEdit('0')
+        self.setpoint_index_edit.setMaxLength(2)
+        self.setpoint_index_edit.setToolTip('Current sequence index (press Enter to change)')
+        sequence_layout.addWidget(self.setpoint_index_edit, 2, 1)
+        
+        self.current_value_label = QLabel('Current Setpoint:')
+        sequence_layout.addWidget(self.current_value_label, 3, 0)
+        self.sequence_value_label = QLabel('0.0')
+        sequence_layout.addWidget(self.sequence_value_label, 3, 1)
+        
+        self.last_setpoint_label = QLabel('Last setpoint:')
+        sequence_layout.addWidget(self.last_setpoint_label, 4, 0)
+        self.wrap_flag_label = QLabel('Not Triggered')
+        sequence_layout.addWidget(self.wrap_flag_label, 4, 1)
+        
+        # Control buttons
+        button_layout = QHBoxLayout()
+        self.reset_index_button = QPushButton('Reset Index')
+        self.manual_step_button = QPushButton('Manual Step')
+        button_layout.addWidget(self.reset_index_button)
+        button_layout.addWidget(self.manual_step_button)
+        sequence_layout.addLayout(button_layout, 5, 0, 1, 3)
+
+        # Initially disable all sequence controls (will be enabled when Use Sequence is checked)
+        self.array_label.setEnabled(False)
+        self.setpoint_array_edit.setEnabled(False)
+        self.index_label.setEnabled(False)
+        self.setpoint_index_edit.setEnabled(False)
+        self.current_value_label.setEnabled(False)
+        self.sequence_value_label.setEnabled(False)
+        self.last_setpoint_label.setEnabled(False)
+        self.wrap_flag_label.setEnabled(False)
+        self.reset_index_button.setEnabled(False)
+        self.manual_step_button.setEnabled(False)
 
         # Parameters
         params_group = QGroupBox('PID Parameters')
@@ -196,7 +249,8 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
 
         # Layout
         grid.addWidget(status_group, 0, 0, 1, 3)
-        grid.addWidget(setpoint_source_group, 1, 0, 1, 2)
+        grid.addWidget(setpoint_source_group, 1, 0, 1, 1)
+        grid.addWidget(sequence_group, 1, 1, 1, 1)
         grid.addWidget(params_group, 2, 0)
         grid.addWidget(self.plot_group, 2, 1)
         grid.setColumnStretch(0, 1)
@@ -226,6 +280,13 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
         self.write_to_config_button.clicked.connect(self._write_to_config)
         self.pause_pid_button.clicked.connect(self._pause_pid)
         self.output_to_zero_button.clicked.connect(self._output_to_zero)
+
+        # Sequence control connections
+        self.use_sequence_checkbox.toggled.connect(self._set_use_sequence)
+        self.setpoint_array_edit.returnPressed.connect(self._set_setpoint_array)
+        self.reset_index_button.clicked.connect(self._reset_sequence_index)
+        self.manual_step_button.clicked.connect(self._manually_change_setpoint)
+        self.setpoint_index_edit.returnPressed.connect(self._set_setpoint_index)
 
 
     # === WINDFREAK STYLE INDIVIDUAL PARAMETER METHODS ===
@@ -306,7 +367,6 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
                 self.setpoint_edit.setText(f"{result:.6f}")
                 
             self._update_status(f"Setpoint = {result}")
-            self._check_hardware_status()
         except Exception as e:
             print(f"[TABS] _set_setpoint error: {e}")
             self._update_status(f"Error: {e}")
@@ -323,6 +383,9 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
                 
             # Show key status in UI
             if isinstance(result, dict) and 'error' not in result:
+                # Initialize paused variable at the start
+                paused = result.get('paused', False)
+                
                 # Update UI input fields with current hardware values
                 try:
                     self.p_edit.setText(f"{result.get('p', 0.0):.6f}")
@@ -343,14 +406,36 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
                     self.setpoint_source_combo.setCurrentText(result['setpoint_source'])
                     self.setpoint_source_combo.blockSignals(False)
                     print(f"[DEBUG] Setpoint source: {result['setpoint_source']}")
+
+                    # Convert digital_setpoint_array to string for display
+                    array_data = result.get('digital_setpoint_array', [])
+                    array_str = str(array_data)
+                    
+                    self.setpoint_array_edit.blockSignals(True)
+                    self.setpoint_array_edit.setText(array_str)
+                    self.setpoint_array_edit.blockSignals(False)
+
+                    self.setpoint_index_edit.blockSignals(True)
+                    self.setpoint_index_edit.setText(f"{result['setpoint_index']}")
+                    self.setpoint_index_edit.blockSignals(False)
+
+                    # Update sequence value display (only the value label, not the description label)
+                    self.sequence_value_label.setText(f"{result.get('setpoint_in_sequence', 0.0):.6f}")
+
                     if result['setpoint_source'] == 'analog_setpoint':
                         self.setpoint_edit.setEnabled(False)
                         self.input_combo.setEnabled(False)
                         self.output_combo.setEnabled(False)
+                        self._set_use_sequence(False)
+                        self._reset_sequence_index()
                     elif result['setpoint_source'] == 'digital_setpoint_in1':
                         self.setpoint_edit.setEnabled(True)
                         self.input_combo.setEnabled(True)
                         self.output_combo.setEnabled(True)
+                        if result['use_setpoint_sequence']:
+                            self._set_use_sequence(True)
+                        else:
+                            self._set_use_sequence(False)
                         self.input_combo.blockSignals(True)
                         self.input_combo.clear()
                         self.input_combo.addItem('in1')
@@ -365,6 +450,10 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
                         self.setpoint_edit.setEnabled(True)
                         self.input_combo.setEnabled(True)
                         self.output_combo.setEnabled(True)
+                        if result['use_setpoint_sequence']:
+                            self._set_use_sequence(True)
+                        else:
+                            self._set_use_sequence(False)
                         self.input_combo.blockSignals(True)
                         self.input_combo.clear()
                         self.input_combo.addItem('in2')
@@ -375,13 +464,22 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
                         self.output_combo.addItems(['out2', 'off'])
                         self.output_combo.setCurrentText(result['output_direct'])
                         self.output_combo.blockSignals(False)
-                    paused = result['paused']
 
                     print(f"[DEBUG] Updated UI fields: p={result.get('p')}, i={result.get('i')}, ival={result.get('ival')}, setpoint={result.get('setpoint')}, min_voltage={result.get('min_voltage')}, max_voltage={result.get('max_voltage')}, input={result.get('input')}, output={result.get('output_direct')}, pause_gains={result.get('pause_gains')}, paused={paused}")
                     print(f"[DEBUG] Updated UI fields: {result}")
 
                 except Exception as ui_error:
                     print(f"[TABS] Error updating UI fields: {ui_error}")
+
+                wrap_flag = result['sequence_wrap_flag']
+                # Set wrap flag display with human-readable text and colors
+                if wrap_flag:
+                    self.wrap_flag_label.setText("Triggered")
+                    self.wrap_flag_label.setStyleSheet('color: #00FF00; font-weight: bold; background-color: rgba(0, 255, 0, 30); padding: 2px; border-radius: 3px;')
+                else:
+                    self.wrap_flag_label.setText("Not Triggered")
+                    self.wrap_flag_label.setStyleSheet('color: #666666; font-weight: normal;')
+                            
 
                 self._update_status(f"Updated UI fields, paused={paused}")
             else:
@@ -599,11 +697,11 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
             value = self.setpoint_source_combo.currentText()
             result = yield(self.queue_work(self.primary_worker, 'set_setpoint_source', value))
             print(f"[DEBUG] _set_setpoint_source result: {result}")
-            # Disable setpoint, input, output if analog_setpoint
+            # Disable setpoint, input, output and sequence controls if analog_setpoint
             if value == 'analog_setpoint':
                 self.setpoint_edit.setEnabled(False)
                 self.input_combo.setEnabled(False)
-                self.output_combo.setEnabled(False)
+                self.output_combo.setEnabled(False) 
             elif value == 'digital_setpoint_in1':
                 self.setpoint_edit.setEnabled(True)
                 self.input_combo.setEnabled(True)
@@ -753,3 +851,142 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
         except Exception as e:
             print(f"[TABS] Output to zero error: {e}")
             self._update_status(f"Output to zero error: {e}")
+
+    # === SETPOINT SEQUENCE METHODS ===
+
+    @define_state(MODE_MANUAL, True)
+    def _set_use_sequence(self, checked, *args):
+        """Enable/disable setpoint sequence mode"""
+        try:
+            result = yield(self.queue_work(self.primary_worker, 'set_use_setpoint_sequence', checked))
+            self._update_status(f"Use sequence: {result}")
+            
+            # Ensure checkbox reflects the actual state - use blockSignals to prevent recursion
+            self.use_sequence_checkbox.blockSignals(True)
+            self.use_sequence_checkbox.setChecked(bool(checked))
+            self.use_sequence_checkbox.blockSignals(False)
+            
+            # Enable/disable sequence controls based on state
+            self.array_label.setEnabled(checked)
+            self.setpoint_array_edit.setEnabled(checked)
+            self.index_label.setEnabled(checked)
+            self.setpoint_index_edit.setEnabled(checked)
+            self.current_value_label.setEnabled(checked)
+            self.sequence_value_label.setEnabled(checked)
+            self.last_setpoint_label.setEnabled(checked)
+            self.wrap_flag_label.setEnabled(checked)
+            self.reset_index_button.setEnabled(checked)
+            self.manual_step_button.setEnabled(checked)
+        except Exception as e:
+            print(f"[TABS] _set_use_sequence error: {e}")
+            self._update_status(f"Error: {e}")
+
+    @define_state(MODE_MANUAL, True)
+    def _set_setpoint_array(self, *args):
+        """Set setpoint array from Python expression"""
+        try:
+            text = self.setpoint_array_edit.text().strip()
+            
+            if not text:
+                self._update_status("Error: Empty expression")
+                return
+            
+            # Safe evaluation of Python expressions
+            import numpy as np
+            import math
+            
+            # Create safe namespace for eval
+            safe_dict = {
+                "np": np,
+                "numpy": np,
+                "math": math,
+                "zeros": np.zeros,
+                "ones": np.ones,
+                "linspace": np.linspace,
+                "arange": np.arange,
+                "array": np.array,
+                "__builtins__": {}  # Remove builtins for security
+            }
+            
+            try:
+                # Evaluate the expression
+                result_array = eval(text, safe_dict)
+                
+                # Convert to list if it's a numpy array
+                if hasattr(result_array, 'tolist'):
+                    array = result_array.tolist()
+                elif isinstance(result_array, (list, tuple)):
+                    array = list(result_array)
+                else:
+                    # Single value, create array
+                    array = [float(result_array)]
+                    
+            except Exception as eval_error:
+                self._update_status(f"Error evaluating expression: {eval_error}")
+                return
+                
+            if not array:
+                self._update_status("Error: Expression resulted in empty array")
+                return
+                
+            if len(array) > 16:
+                self._update_status(f"Error: Array too long ({len(array)} elements, max 16)")
+                return
+                
+            # Ensure all elements are numbers
+            try:
+                array = [float(val) for val in array]
+            except (ValueError, TypeError):
+                self._update_status("Error: Array must contain only numbers")
+                return
+                
+            result = yield(self.queue_work(self.primary_worker, 'set_setpoint_array', array))
+            self._update_status(f"Array set ({len(array)} elements)")
+            
+        except Exception as e:
+            print(f"[TABS] _set_setpoint_array error: {e}")
+            self._update_status(f"Error: {e}")
+
+    @define_state(MODE_MANUAL, True)
+    def _reset_sequence_index(self, *args):
+        """Reset sequence index to 0"""
+        try:
+            result = yield(self.queue_work(self.primary_worker, 'reset_sequence_index'))
+            self._update_status(f"Index reset: {result}")
+            
+            # Reset trigger flag display to gray (Not Triggered)
+            self.wrap_flag_label.setText("Not Triggered")
+            self.wrap_flag_label.setStyleSheet('color: #666666; font-weight: normal;')
+            
+        except Exception as e:
+            print(f"[TABS] _reset_sequence_index error: {e}")
+            self._update_status(f"Error: {e}")
+
+    @define_state(MODE_MANUAL, True)
+    def _manually_change_setpoint(self, *args):
+        """Manually trigger setpoint change in sequence"""
+        try:
+            result = yield(self.queue_work(self.primary_worker, 'manually_change_setpoint'))
+            self._update_status(f"Manual step: {result}")
+        except Exception as e:
+            print(f"[TABS] _manually_change_setpoint error: {e}")
+            self._update_status(f"Error: {e}")
+
+    @define_state(MODE_MANUAL, True)
+    def _set_setpoint_index(self, *args):
+        """Set setpoint index directly"""
+        try:
+            text = self.setpoint_index_edit.text()
+            index = int(text)
+            
+            if index < 0 or index > 15:
+                self._update_status("Error: Index must be 0-15")
+                return
+                
+            result = yield(self.queue_work(self.primary_worker, 'set_setpoint_index', index))
+            self._update_status(f"Index set to: {result}")
+        except ValueError:
+            self._update_status("Error: Invalid index (use integer 0-15)")
+        except Exception as e:
+            print(f"[TABS] _set_setpoint_index error: {e}")
+            self._update_status(f"Error: {e}")
