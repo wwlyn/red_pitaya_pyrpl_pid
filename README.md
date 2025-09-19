@@ -13,14 +13,12 @@
     - [Implementation Tips](#implementation-tips)
   - [Example: Raman Light Intensity Locking \& Digital Sequence](#example-raman-light-intensity-locking--digital-sequence)
     - [Goal](#goal)
-    - [Calculation for the light intensity noise](#calculation-for-the-light-intensity-noise)
     - [How to use PyRPL's PID module](#how-to-use-pyrpls-pid-module)
     - [Limit on $K\_i$: Improve the bandwidth of PID](#limit-on-k_i-improve-the-bandwidth-of-pid)
     - [Integral range: Reduce the useless integration time](#integral-range-reduce-the-useless-integration-time)
     - [Output when hold: Keep the last output when hold](#output-when-hold-keep-the-last-output-when-hold)
     - [Digital sequence mode: Use external trigger to change digital setpoint](#digital-sequence-mode-use-external-trigger-to-change-digital-setpoint)
     - [External Trigger Configuration](#external-trigger-configuration)
-    - [Noise Performance](#noise-performance-1)
     - [Labscript](#labscript)
       - [Blacs](#blacs)
       - [Fix the package conflict without downgrading in **python 3.9**](#fix-the-package-conflict-without-downgrading-in-python-39)
@@ -166,12 +164,6 @@ Then, we want to run the sequence. To be specific, we want to run the sequence a
   <img src="figs/Sequence.jpg">
   <figcaption>When the light is off, we don't want the lockbox to work otherwise if there is DC signal, it will saturate. And we also want to change the setpoint during the hold and when unhold, the lockbox will lock to another setpoint.</figcaption>
 </figure>
-
-
-### Calculation for the light intensity noise
-
-*(This section is under development - content to be added)*
-
 
 ### How to use PyRPL's PID module
 
@@ -353,12 +345,6 @@ Tested in the simplest PID loop which just connects input and output of RP.
   <img src="figs/PinConnection.jpg">
   <figcaption><strong>Ground Sharing Structure:</strong> All triggers share one ground pin through BNC to avoid multiple ground connections.</figcaption>
 </figure>
-
-### Noise Performance
-
-*(This section is under development - detailed noise analysis to be added)*
-
-
 
 ### Labscript
 
