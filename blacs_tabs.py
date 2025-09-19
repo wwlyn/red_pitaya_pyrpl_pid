@@ -36,7 +36,8 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
     """BLACS Tab for controlling Red Pitaya PID via pyrpl."""
     
     # Specify that this device has no output channels
-    device_worker_class = 'labscript_devices.red_pitaya_pyrpl_pid.blacs_workers.red_pitaya_pyrpl_pid_worker'
+    #device_worker_class = 'labscript_devices.red_pitaya_pyrpl_pid.blacs_workers.red_pitaya_pyrpl_pid_worker'
+    device_worker_class = 'user_devices.Cesium.red_pitaya_pyrpl_pid.blacs_workers.red_pitaya_pyrpl_pid_worker'
 
     def initialise_GUI(self):
         """Build the GUI from .ui if available, otherwise create a simple one programmatically."""
@@ -636,46 +637,12 @@ class red_pitaya_pyrpl_pid_tab(DeviceTab):
         # Always use pid1 by default, do not pass pid_module
         self.create_worker(
             'rp_pid_main_worker',
-            'labscript_devices.red_pitaya_pyrpl_pid.blacs_workers.red_pitaya_pyrpl_pid_worker',
+            #'labscript_devices.red_pitaya_pyrpl_pid.blacs_workers.red_pitaya_pyrpl_pid_worker',
+            'user_devices.Cesium.red_pitaya_pyrpl_pid.blacs_workers.red_pitaya_pyrpl_pid_worker',
             {'ip_addr': ip_addr}
         )
         self.primary_worker = 'rp_pid_main_worker'
 
-    @define_state(MODE_BUFFERED, False)
-    def transition_to_manual(self, notify_queue, program=False):
-        """Return to manual mode and refresh UI with current values."""
-        self.mode = MODE_TRANSITION_TO_MANUAL
-        success, final_values = yield self.queue_work(self.primary_worker, 'transition_to_manual')
-
-        if not getattr(self, '_has_loaded_ui', False) and success:
-            # Update fallback UI fields if present
-            try:
-                self.setpoint_edit.setText(str(final_values.get('setpoint', 0.0)))
-                self.p_edit.setText(str(final_values.get('p', 0.0)))
-                self.i_edit.setText(str(final_values.get('i', 0.0)))
-                self.min_edit.setText(str(final_values.get('min_voltage', OUT_MIN)))
-                self.max_edit.setText(str(final_values.get('max_voltage', OUT_MAX)))
-                self.input_combo.setCurrentText(str(final_values.get('input', 'in1')))
-                self.output_combo.setCurrentText(str(final_values.get('output_direct', 'off')))
-                self.ival_edit.setText(str(final_values.get('ival', 0.0)))
-                self.pause_gains_combo.setCurrentText(str(final_values.get('pause_gains', 'off')))
-            except Exception:
-                pass
-
-        if success:
-            notify_queue.put([self.device_name, 'success'])
-            self.mode = MODE_MANUAL
-        else:
-            notify_queue.put([self.device_name, 'fail'])
-            raise Exception('Could not transition to manual. You must restart this device to continue')
-
-        if program:
-            self.program_device()
-        else:
-            self._last_programmed_values = self.get_front_panel_values()
-
-        # Use Windfreak style - just return
-        return
 
     @define_state(MODE_MANUAL, True)
     def _set_pause_gains(self, *args):

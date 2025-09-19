@@ -33,6 +33,13 @@ class red_pitaya_pyrpl_pid_worker(Worker):
         print(f"[WORKER] ip_addr={getattr(self, 'ip_addr', None)}")
         print(f"[WORKER] sys.executable={sys.executable}")
         try:
+            import numpy as np
+            if not hasattr(np, 'VisibleDeprecationWarning'):
+                np.VisibleDeprecationWarning = UserWarning
+            if not hasattr(np, 'ComplexWarning'):
+                np.ComplexWarning = UserWarning
+            if not hasattr(np, "complex"):
+                np.complex = complex
             from pyrpl import Pyrpl
             print("[WORKER] Imported Pyrpl successfully.")
             print(f"[WORKER] Attempting to connect to Red Pitaya at {self.ip_addr}")
@@ -88,10 +95,12 @@ class red_pitaya_pyrpl_pid_worker(Worker):
                     self.setpoint_source = 'digital_setpoint_in2'
                     self.set_in2_enabled = True
                     self.set_analog_enabled = False
+                    self.set_in1_enabled = blacs_cfg['set_in1_enabled']
                 if blacs_cfg['set_in1_enabled']:
                     self.setpoint_source = 'digital_setpoint_in1'
                     self.set_in1_enabled = True
                     self.set_analog_enabled = False
+                    self.set_in2_enabled = blacs_cfg['set_in2_enabled']
                 if blacs_cfg['set_analog_enabled']:
                     self.setpoint_source = 'analog_setpoint'
                     self.set_analog_enabled = True
@@ -431,74 +440,6 @@ class red_pitaya_pyrpl_pid_worker(Worker):
             print(f"[WORKER] reset_pid error: {e}")
             return f"Reset failed: {e}"
 
-
-    # ---------- BLACS required methods ----------
-    def check_remote_values(self):
-        self._read_current_state()
-        return self.current
-
-    def program_manual(self, values):
-        # Apply provided values in manual mode
-        for pid_id, pid_values in values.items():
-            for k, v in pid_values.items():
-                self._set_param(pid_id, k, v)
-        self._read_current_state()
-        return {}
-
-
-    # def transition_to_buffered(self, device_name, h5_file, initial_values, fresh):
-    #     # Read parameters from the shot file written by labscript device
-    #     import h5py
-    #     buffered = {}
-    #     with h5py.File(h5_file, 'r') as f:
-    #         grp_path = f'/devices/{device_name}'
-    #         if grp_path in f:
-    #             grp = f[grp_path]
-    #             for key, ds in grp.items():
-    #                 if ds.shape == ():
-    #                     if ds.dtype.kind == 'S':
-    #                         buffered[key] = ds[()].decode('utf-8')
-    #                     else:
-    #                         buffered[key] = float(ds[()])
-    #                 else:
-    #                     buffered[key] = list(ds[:])
-
-    #     for k, v in buffered.items():
-    #         self._set_param(k, v)
-
-    #     return initial_values
-
-    def transition_to_manual(self):
-        # Return to safe manual state (do not force any particular values; report current)
-        self._read_current_state()
-        return self.current.copy()
-
-    def abort_buffered(self):
-        # Pause both PIDs as a safe abort action
-        try:
-            self.pids['in1'].paused = True
-            self.pids['in2'].paused = True
-        except Exception:
-            pass
-        return True
-
-    def abort_transition_to_buffered(self):
-        try:
-            self.pids['in1'].paused = True
-            self.pids['in2'].paused = True
-        except Exception:
-            pass
-        return True
-
-    def shutdown(self):
-        try:
-            self.pids['in1'].paused = True
-            self.pids['in2'].paused = True
-            if hasattr(self.p, 'save_config'):
-                self.p.save_config()
-        except Exception:
-            pass
-
     # ---------- Methods callable from the Tab ----------
     def write_to_config(self):
         import yaml
@@ -752,3 +693,100 @@ class red_pitaya_pyrpl_pid_worker(Worker):
         except Exception as e:
             print(f"[WORKER] set_setpoint_index error: {e}")
             raise
+
+    # ---------- BLACS required methods ----------
+    def program_manual(self, values):
+        return {}
+
+    def transition_to_manual(self):
+        try:
+            sp1 = self.dig2phy_setpoint_in1(self.pids['in1'].setpoint)
+            sp2 = self.dig2phy_setpoint_in2(self.pids['in2'].setpoint)
+            return {'in1': float(sp1), 'in2': float(sp2)}
+        except Exception as e:
+            print(f"[WORKER] transition_to_manual error: {e}")
+            return {'in1': 0.0}
+
+    def transition_to_buffered(self, device_name, h5_file, initial_values, fresh):
+        """Read simplified parameters from HDF5 and configure hardware"""
+        print(f"[WORKER] transition_to_buffered called: device={device_name}, fresh={fresh}")
+        print("0")
+        
+        try:
+            import h5py
+            
+            with h5py.File(h5_file, 'r') as hdf5_file:
+                device_group = hdf5_file[f'/devices/{device_name}']
+                print("1")
+                print(device_group)
+                
+                # Process each channel's parameters
+                for channel in ['in1', 'in2']:
+                    if channel in device_group:
+                        channel_group = device_group[channel]
+                        pid = self.pids[channel]
+                        
+                        if 'digital_setpoint_array' in channel_group:
+                            array = list(channel_group['digital_setpoint_array'][:])
+                            # Use worker's method to handle calibration
+                            if channel == 'in1':
+                                digital_array = [self.phy2dig_setpoint_in1(val) for val in array]
+                                self.current['in1']['digital_setpoint_array'] = array
+                                pid.set_setpoint_array(digital_array)
+                                pid.reset_sequence_index()
+                            else:  # in2
+                                digital_array = [self.phy2dig_setpoint_in2(val) for val in array]
+                                self.current['in2']['digital_setpoint_array'] = array  
+                                pid.set_setpoint_array(digital_array)
+                                pid.reset_sequence_index()
+                            print(f"[WORKER] Set {channel}.digital_setpoint_array = {array}")
+            
+            print(f"[WORKER] transition_to_buffered completed successfully")
+            return {}
+            
+        except Exception as e:
+            print(f"[WORKER] transition_to_buffered failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
+
+    def abort_buffered(self):
+        """Abort buffered mode - pause PIDs safely"""
+        try:
+            for channel in ['in1', 'in2']:
+                pid = self.pids[channel]
+                pid.pause_gains = 'pi'  # Pause both P and I
+                pid.paused = True
+                pid.ival = -0.99        # Reset integrator
+            print("[WORKER] Buffered mode aborted - PIDs paused")
+            return True
+        except Exception as e:
+            print(f"[WORKER] Error in abort_buffered: {e}")
+            return False
+
+    def abort_transition_to_buffered(self):
+        """Abort transition to buffered mode"""
+        try:
+            for channel in ['in1', 'in2']:
+                pid = self.pids[channel]
+                pid.pause_gains = 'pi'  # Pause both P and I
+                pid.paused = True
+                pid.ival = -0.99        # Reset integrator
+            print("[WORKER] Transition to buffered aborted - PIDs paused")
+            return True
+        except Exception as e:
+            print(f"[WORKER] Error in abort_transition_to_buffered: {e}")
+            return False
+
+    def shutdown(self):
+        """Shutdown worker - ensure safe state"""
+        try:
+            for channel in ['in1', 'in2']:
+                pid = self.pids[channel]
+                pid.pause_gains = 'pi'  # Pause both P and I
+                pid.paused = True
+                pid.ival = -0.99        # Reset integrator
+            print("[WORKER] Worker shutdown - all PIDs safely paused")
+        except Exception as e:
+            print(f"[WORKER] Error during shutdown: {e}")
+            pass
