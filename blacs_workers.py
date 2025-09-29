@@ -642,6 +642,11 @@ class red_pitaya_pyrpl_pid_worker(Worker):
     def set_setpoint_array(self, array):
         """Set setpoint array for sequence mode"""
         try:
+            # Pad array to 16 elements with zeros if shorter
+            if len(array) < 16:
+                array = list(array) + [0.0] * (16 - len(array))
+                print(f"[WORKER] Array padded to 16 elements with zeros")
+            
             if self.setpoint_source == 'digital_setpoint_in2':
                 digital_array = [self.phy2dig_setpoint_in2(val) for val in array]
                 self.current['in2']['digital_setpoint_array'] = array
